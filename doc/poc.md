@@ -1,0 +1,2 @@
+# Proof of concept
+Le poc de ce projet est réalisé avec Node.js, et est testé avec le repos https://github.com/NicolaGolaz/flask-user-manager, qui est une application flask de gestion d'utilisateur. La vérification de la qualité du code se fait avec flake8. Il y un fichier de test (tests.py).
