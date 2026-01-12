@@ -1,96 +1,108 @@
 const fs = require('fs');
 const path = require('path');
-const https =  require('https');
 
+const scriptFolderName = path.basename(__dirname)
 
-function analyseLocal(rootDir) {
-    const report = {
-        languages: [],
-        hasTests: false,
-        testCommand: '',
-        configTemplate: 'generic.yml'
-    };
+// Récupère les fichiers du repos en ignorant les fichier du script
+function getAllFiles(dirPath, arrayOfFiles) {
+    const files = fs.readdirSync(dirPath);
+    arrayOfFiles = arrayOfFiles || [];
 
-    // Chemins des fichiers clés
-    const paths = {
-        requirements: path.join(rootDir, 'requirements.txt'),
-        pyproject: path.join(rootDir, 'pyproject.toml'),
-        tox: path.join(rootDir, 'tox.ini'),
-        pytestIni: path.join(rootDir, 'pytest.ini'),
-        testFolder: path.join(rootDir, 'tests')
-    };
-
-    // Détection python
-    if (fs.existsSync(paths.requirements) || fs.existsSync(paths.pyproject)) {
-        report.languages.push('Python');
-        report.configTemplate = 'python.yml';
-
-        if (fs.existsSync(paths.tox)) {
-            report.hasTests = true;
-            report.testCommand = 'tox'; 
-        }
-
-        if (fs.existsSync(paths.pytestIni)) {
-            report.hasTests = true;
-            report.testCommand = 'pytest'; 
-        }
-
-        // Détection de tests basique
-        if (fs.existsSync(paths.requirements)) {
-            let reqContent = fs.readFileSync(paths.requirements, 'utf8')
-            if (reqContent.includes('pytest')){
-                report.hasTests = true;
-                report.testCommand = 'pytest'
+    files.forEach(file => {
+        const fullPath = path.join(dirPath, file);
+        if (fs.statSync(fullPath).isDirectory()) {
+            if (![scriptFolderName, 'node_modules', '.git', 'venv', '.venv'].includes(file)) {
+                arrayOfFiles = getAllFiles(fullPath, arrayOfFiles);
             }
+        } else {
+            arrayOfFiles.push(fullPath);
         }
-    }
-    
-    // Ajouté la détéction nodejs plus tard
-    return report;
+    });
+    return arrayOfFiles;
 }
 
-function generateWorkflow(data, targetDir) {
-    const workflowDir = path.join(targetDir, '.github', 'workflows');
-    
-    const template = path.join(__dirname, 'templates', data.configTemplate);
-    if (!fs.existsSync(template)) {
-        console.log(`Template ${data.configTemplate} non trouvé, utilisation d'un contenu par défaut.`);
-        fs.writeFileSync(path.join(workflowDir, 'main.yml'), "# Workflow générique\nname: CI");
-        return;
+// Analyse local
+function analyseLocal(rootDir) {
+    const allFiles = getAllFiles(rootDir);
+    const components = new Map();
+
+     // Détection python
+    const pythonFiles = allFiles.filter(f => f.endsWith('.py'));
+    if (pythonFiles.length > 0) {
+        let testCommand = "";
+        
+        // 1. Cherche si des tests python existe
+        const hasPytestConfig = allFiles.some(f => 
+            f.endsWith('pytest.ini') || f.endsWith('conftest.py') || f.endsWith('tox.ini')
+        );
+
+        const usesPytestInDeps = allFiles.some(f => {
+            if (f.endsWith('requirements.txt') || f.endsWith('pyproject.toml')) {
+                const content = fs.readFileSync(f, 'utf8');
+                return content.includes('pytest');
+            }
+            return false;
+        });
+
+        // 2. Cherche la présence de fichiers de tests
+        const hasTestFiles = allFiles.some(f => {
+            const name = path.basename(f).toLowerCase();
+            return name.includes('test') && name.endsWith('.py');
+        });
+
+        if (hasTestFiles) {
+            if (hasPytestConfig || usesPytestInDeps) {
+                // On sait que c'est Pytest
+                testCommand = "pytest";
+            } else {
+                // Par défaut on utilise Unittest
+                testCommand = "python -m unittest discover -p '*test*.py'";
+            }
+        }
+
+        const testSteps = testCommand ? [{ name: `Run ${testCommand.split(' ')[0]}`, run: testCommand }] : [];
+
+        components.set('python', {
+            template: 'python.yml',
+            output: 'python-ci.yml',
+            testSteps: testSteps
+        });
     }
 
-    let content = fs.readFileSync(template, 'utf8');
+    return Array.from(components.values());
+}
 
-    const testStep = data.hasTests 
-    ? `- name: Run tests\n        run: ${data.testCommand}`
-    : "# Aucun tests détecté"
+// Génére le worlflow
+function generateWorkflows(components, rootDir) {
+    const workflowDir = path.join(rootDir, '.github', 'workflows');
+    if (!fs.existsSync(workflowDir)) fs.mkdirSync(workflowDir, { recursive: true });
 
-    content = content.replace('{{TEST_STEP}}', testStep);
+    components.forEach(comp => {
+        const templatePath = path.join(__dirname, 'templates', comp.template);
+        if (!fs.existsSync(templatePath)) return;
 
-    fs.writeFileSync(path.join(workflowDir, 'main.yml'), content);
-    console.log(`Workflow ajouté avec succès dans ${workflowDir} via ${data.configTemplate}`)
+        let content = fs.readFileSync(templatePath, 'utf8');
+        let testYaml = comp.testSteps.length > 0 
+            ? comp.testSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
+            : "      # Aucun test détecté";
+
+        content = content.replace('{{TEST_STEPS}}', testYaml);
+        fs.writeFileSync(path.join(workflowDir, comp.output), content);
+        console.log(`Workflow généré : ${comp.output}`);
+    });
 }
 
 async function Start() {
-    const target = process.argv[2];
+    // const target = process.argv[2] || 'local'; Pour le mode api
     try {
-    if (!target || target === 'local')
-    {
-        console.log("Analyse du dépot local...")
-        const rootDir = path.join(__dirname, '..');
-        const data = analyseLocal(rootDir);
-        generateWorkflow(data, rootDir);
-    } else 
-    {
-        console.log(`Analyse du dépôt distant : ${target} ...`)
-        const data = await analyseRemote(target)
-        console.log("Données récupérées via API:", data);
-        generateWorkflow(data, process.cwd());
+            const rootDir = path.join(__dirname, '..'); // Remonte d'un cran
+            console.log(`🔍 Analyse du dossier : ${path.resolve(rootDir)}`);
+            const components = analyseLocal(rootDir);
+            generateWorkflows(components, rootDir);
+        
+    } catch (err) {
+        console.error("Erreur système :", err.message);
     }
-}
-catch (err) {
-    console.error("Une erreur est survenu : ", err)
-}
 }
 
 Start();
