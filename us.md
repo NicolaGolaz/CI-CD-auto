@@ -34,22 +34,22 @@
 * **Quand** je clique sur le fichier de mise en place des pipelines
 * **Alors** l'outil récupère les technologies (Vite, React, Express, etc.) utilisées dans le repository
 
-## US-04 : Sélection d'un fichier config
+## US-04 : Sélection d'un fichier template
 
 **En tant qu’** Utilisateur
-**Je veux** que l'outil utilise plusieurs fichier config predéfini
+**Je veux** que l'outil utilise plusieurs fichier template predéfini
 **Afin de** pouvoir choisir le plus adapté.
 
 * **Étant donné** que je suis à la racine de mon repository
 * **Quand** je clique sur le fichier de mise en place des pipelines
-* **Alors** l'outil sélectionne le fichier config en fonction de données récupérer sur le repository
+* **Alors** l'outil sélectionne le template approprié en fonction des données récupérées sur le repository
 
 ## US-05 : Détection de tests
 
 **En tant qu’** Utilisateur
-**Je veux** que l'outil détecte la présence de tests dans le repository
+**Je veux** que l'outil détecte la présence de tests (et leur technologie) dans le repository
 **Afin de** pouvoir les éxecuter dans le workflows.
 
 * **Étant donné** que je suis à la racine de mon repository
 * **Quand** je clique sur le fichier de mise en place des pipelines
-* **Alors** l'outil détecte la présence de tests dans le repository et ajoute leurs exécution dans le workflow
+* **Alors** l'outil détecte la présence de tests dans le repository, et leurs technologie (pytest, unittest) et ajoute leurs exécution dans le workflow
