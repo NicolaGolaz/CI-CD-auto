@@ -7,19 +7,41 @@ function analyseLocal(rootDir) {
     const report = {
         languages: [],
         hasTests: false,
+        testCommand: '',
         configTemplate: 'generic.yml'
     };
 
-    // Détection Python
-    const hasRequirements = fs.existsSync(path.join(rootDir, 'requirements.txt'));
+    // Chemins des fichiers clés
+    const paths = {
+        requirements: path.join(rootDir, 'requirements.txt'),
+        pyproject: path.join(rootDir, 'pyproject.toml'),
+        tox: path.join(rootDir, 'tox.ini'),
+        pytestIni: path.join(rootDir, 'pytest.ini'),
+        testFolder: path.join(rootDir, 'tests')
+    };
 
-    if (hasRequirements) {
+    // Détection python
+    if (fs.existsSync(paths.requirements) || fs.existsSync(paths.pyproject)) {
         report.languages.push('Python');
         report.configTemplate = 'python.yml';
 
-        // Détection de tests basique
-        if (fs.existsSync(path.join(rootDir, 'tests.py')) || fs.existsSync(path.join(rootDir, 'pytest.ini'))) {
+        if (fs.existsSync(paths.tox)) {
             report.hasTests = true;
+            report.testCommand = 'tox'; 
+        }
+
+        if (fs.existsSync(paths.pytestIni)) {
+            report.hasTests = true;
+            report.testCommand = 'pytest'; 
+        }
+
+        // Détection de tests basique
+        if (fs.existsSync(paths.requirements)) {
+            let reqContent = fs.readFileSync(paths.requirements, 'utf8')
+            if (reqContent.includes('pytest')){
+                report.hasTests = true;
+                report.testCommand = 'pytest'
+            }
         }
     }
     
@@ -31,7 +53,22 @@ function generateWorkflow(data, targetDir) {
     const workflowDir = path.join(targetDir, '.github', 'workflows');
     
     const template = path.join(__dirname, 'templates', data.configTemplate);
-    if ()
+    if (!fs.existsSync(template)) {
+        console.log(`Template ${data.configTemplate} non trouvé, utilisation d'un contenu par défaut.`);
+        fs.writeFileSync(path.join(workflowDir, 'main.yml'), "# Workflow générique\nname: CI");
+        return;
+    }
+
+    let content = fs.readFileSync(template, 'utf8');
+
+    const testStep = data.hasTests 
+    ? `- name: Run tests\n        run: ${data.testCommand}`
+    : "# Aucun tests détecté"
+
+    content = content.replace('{{TEST_STEP}}', testStep);
+
+    fs.writeFileSync(path.join(workflowDir, 'main.yml'), content);
+    console.log(`Workflow ajouté avec succès dans ${workflowDir} via ${data.configTemplate}`)
 }
 
 async function Start() {
