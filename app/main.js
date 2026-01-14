@@ -123,7 +123,7 @@ function generateWorkflows(components, rootDir) {
         // Ajout des étapes de linting du code
         let lintYaml = comp.lintSteps.length > 0
             ? comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
-            : "      # Outil de linting nom détecté";
+            : comp.testSteps.map(`      - name: Linting basique\n        run: python -m compileall .`).join('\n');
 
         content = content.replace('{{LINT_STEPS}}', lintYaml);
 
