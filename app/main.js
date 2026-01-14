@@ -31,9 +31,10 @@ function analyseLocal(rootDir) {
     if (pythonFiles.length > 0) {
         let testCommand = "";
         
-        const firstPyFile = pythonFiles[0];
-        const pyDir = path.dirname(firstPyFile)
-
+        
+        const pyDir = path.dirname(allFiles.find(f => 
+        f.endsWith('requirements.txt') || f.endsWith('pyproject.toml')    
+        ))
         let relativeDir = path.relative(rootDir, pyDir).replace(/\\/g, '/') || ".";
 
         // 1. Cherche si des tests python existe
