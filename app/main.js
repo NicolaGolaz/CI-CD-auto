@@ -31,26 +31,52 @@ function analyseLocal(rootDir) {
     if (pythonFiles.length > 0) {
         let testCommand = "";
         
-        
+        // 1. Détecte le dossier de travail
         const pyDir = path.dirname(allFiles.find(f => 
         f.endsWith('requirements.txt') || f.endsWith('pyproject.toml')    
         ))
         let relativeDir = path.relative(rootDir, pyDir).replace(/\\/g, '/') || ".";
 
-        // 1. Cherche si des tests python existe
+
+        // 2. Détection de flake8
+        const hasConfigFile = allFiles.some(f => path.basename(f) === '.flake8');
+        
+        const hasSharedConfig = allFiles.some(f => {
+            const name = path.basename(f);
+            if (name === 'setup.cfg' || name === 'tox.ini'){
+                const content = fs.readFileSync(f, 'utf8');
+                return content.includes('[flake8]');
+            }
+            return false;
+        })
+
+        const hasFlake8InDeps = allFiles.some(f => {
+            const name = path.basename(f);
+            if (['requirements.txt', 'dev-requirements.txt', 'requirements-dev.txt', 'pyproject.toml'].includes(name)){
+                const content = fs.readFileSync(f, 'utf8')
+                return /\bflake8\b/.test(content);
+            }
+            return false;
+        })
+        
+        let lintSteps = []
+        if (hasConfigFile || hasSharedConfig || hasFlake8InDeps) {
+        lintSteps = [{name: 'Linting du code avec flake8', run: 'flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics'}];
+        }
+        // 3. Cherche si des tests python existe
         const hasPytestConfig = allFiles.some(f => 
             f.endsWith('pytest.ini') || f.endsWith('conftest.py') || f.endsWith('tox.ini')
         );
 
         const usesPytestInDeps = allFiles.some(f => {
-            if (f.endsWith('requirements.txt') || f.endsWith('pyproject.toml')) {
+            if (f.endsWith('requirements.txt') || f.endsWith('pyproject.toml') || f.endsWith('dev-requirements.txt') || f.endsWith('requirements-dev.txt')) {
                 const content = fs.readFileSync(f, 'utf8');
                 return content.includes('pytest');
             }
             return false;
         });
 
-        // 2. Cherche la présence de fichiers de tests
+        // 4. Cherche la présence de fichiers de tests
         const hasTestFiles = allFiles.some(f => {
             const name = path.basename(f).toLowerCase();
             return name.includes('test') && name.endsWith('.py');
@@ -71,8 +97,9 @@ function analyseLocal(rootDir) {
         components.set('python', {
             template: 'python.yml',
             output: 'python-ci.yml',
+            workingDir: relativeDir,
             testSteps: testSteps,
-            workingDir: relativeDir
+            lintSteps: lintSteps
         });
     }
 
@@ -93,6 +120,14 @@ function generateWorkflows(components, rootDir) {
         // Ajout du dossier de travaille
         content = content.replace('{{WORKING_DIRECTORY}}', comp.workingDir);
 
+        // Ajout des étapes de linting du code
+        let lintYaml = comp.lintSteps.length > 0
+            ? comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
+            : "      # Outil de linting nom détecté";
+
+        content = content.replace('{{LINT_STEPS}}', lintYaml);
+
+        // Ajout des étapes d'éxecution des tests
         let testYaml = comp.testSteps.length > 0 
             ? comp.testSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
             : "      # Aucun test détecté";
