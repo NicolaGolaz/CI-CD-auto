@@ -31,6 +31,11 @@ function analyseLocal(rootDir) {
     if (pythonFiles.length > 0) {
         let testCommand = "";
         
+        const firstPyFile = pythonFiles[0];
+        const pyDir = path.dirname(firstPyFile)
+
+        let relativeDir = path.relative(rootDir, pyDir).replace(/\\/g, '/') || ".";
+
         // 1. Cherche si des tests python existe
         const hasPytestConfig = allFiles.some(f => 
             f.endsWith('pytest.ini') || f.endsWith('conftest.py') || f.endsWith('tox.ini')
@@ -65,7 +70,8 @@ function analyseLocal(rootDir) {
         components.set('python', {
             template: 'python.yml',
             output: 'python-ci.yml',
-            testSteps: testSteps
+            testSteps: testSteps,
+            workingDir: relativeDir
         });
     }
 
@@ -82,11 +88,16 @@ function generateWorkflows(components, rootDir) {
         if (!fs.existsSync(templatePath)) return;
 
         let content = fs.readFileSync(templatePath, 'utf8');
+        
+        // Ajout du dossier de travaille
+        content = content.replace('{{WORKING_DIRECTORY}}', comp.workingDir);
+
         let testYaml = comp.testSteps.length > 0 
             ? comp.testSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
             : "      # Aucun test détecté";
 
         content = content.replace('{{TEST_STEPS}}', testYaml);
+
         fs.writeFileSync(path.join(workflowDir, comp.output), content);
         console.log(`Workflow généré : ${comp.output}`);
     });
@@ -96,7 +107,7 @@ async function Start() {
     // const target = process.argv[2] || 'local'; Pour le mode api
     try {
             const rootDir = path.join(__dirname, '..'); // Remonte d'un cran
-            console.log(`🔍 Analyse du dossier : ${path.resolve(rootDir)}`);
+            console.log(`Analyse du dossier : ${path.resolve(rootDir)}`);
             const components = analyseLocal(rootDir);
             generateWorkflows(components, rootDir);
         
