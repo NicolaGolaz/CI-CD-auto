@@ -1,14 +1,21 @@
-name: Node CI
+name: Node.js CI
 on: [push]
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: {{WORKING_DIRECTORY}}
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node
+      - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install
+          cache: 'npm'
+          cache-dependency-path: {{WORKING_DIRECTORY}}/package-lock.json
+      - name: Install dependencies
         run: npm install
+{{LINT_STEPS}}
 {{TEST_STEPS}}

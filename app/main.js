@@ -103,6 +103,58 @@ function analyseLocal(rootDir) {
         });
     }
 
+    // Détection Node.js
+    const packageFiles = allFiles.filter(f => f.endsWith('package.json'));
+
+    packageFiles.forEach(pkgPath => {
+
+        if (pkgPath.includes('node_modules')) return;
+
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            const pkgDir = path.dirname(pkgPath);
+            const relativeDir = path.relative(rootDir, pkgDir).replace(/\\/g, '/') || "."; 
+
+            let testSteps = [];
+            let lintSteps = [];
+
+            if (pkg.scripts) {
+                // détection des tests
+                Object.keys(pkg.scripts).forEach(scriptName => {
+                    if (scriptName.toLowerCase().includes('test')) {
+                        testSteps.push({
+                            name: `Node test (${scriptName})`,
+                            run: `npm run ${scriptName}`
+                        });
+                    }
+                });
+            }
+
+            // détection du linting 
+            if (pkg.scripts.lint || (pkg.devDependencies && pkg.devDependencies.eslint)) {
+                lintSteps.push({
+                    name: 'Linting du code avec esLint',
+                    run: pkg.scripts.lint ? 'npm run lint' : 'npx eslint .'
+                })
+            }
+            if (testSteps.length > 0 || pkg.dependencies || pkg.devDependencies) {
+                
+                // nom de fichier de sortie unique si plusieurs package.json
+                const suffix = relativeDir === "." ? "root" : relativeDir.replace(/\//g, '-');
+
+                components.set(`node-${pkgPath}`, {
+                    template: 'node.yml',
+                    output: `node-ci-${suffix}.yml`,
+                    workingDir : relativeDir,
+                    testSteps: testSteps,
+                    lintSteps: lintSteps
+                });
+            }
+        } catch (e) {
+            console.error(`Erreur lecture ${pkgPath}:`, e.message);
+        }
+    });
+
     return Array.from(components.values());
 }
 
@@ -118,21 +170,27 @@ function generateWorkflows(components, rootDir) {
         let content = fs.readFileSync(templatePath, 'utf8');
         
         // Ajout du dossier de travaille
-        content = content.replace('{{WORKING_DIRECTORY}}', comp.workingDir);
+        content = content.replace(/{{WORKING_DIRECTORY}}/g, comp.workingDir);
 
         // Ajout des étapes de linting du code
-        let lintYaml = comp.lintSteps.length > 0
-            ? comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
-            : comp.testSteps.map(`      - name: Linting basique\n        run: python -m compileall .`).join('\n');
+        let lintYaml = "";
+        if (comp.lintSteps && comp.lintSteps.length > 0) {
+            lintYaml = comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n');
+        } else if (comp.template === 'python.yml') {
+            // Uniquement pour python si aucun linter trouvé
+            lintYaml = `      - name: Linting basique\n        run: python -m compileall .`;
+        } else {
+            lintYaml = `      # Aucun linter détecté`;
+        }
 
-        content = content.replace('{{LINT_STEPS}}', lintYaml);
+        content = content.replace(/{{LINT_STEPS}}/g, lintYaml);
 
         // Ajout des étapes d'éxecution des tests
         let testYaml = comp.testSteps.length > 0 
             ? comp.testSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
             : "      # Aucun test détecté";
 
-        content = content.replace('{{TEST_STEPS}}', testYaml);
+        content = content.replace(/{{TEST_STEPS}}/g, testYaml);
 
         fs.writeFileSync(path.join(workflowDir, comp.output), content);
         console.log(`Workflow généré : ${comp.output}`);
