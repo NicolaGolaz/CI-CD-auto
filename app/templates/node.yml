@@ -19,3 +19,20 @@ jobs:
         run: npm install
 {{LINT_STEPS}}
 {{TEST_STEPS}}
+      - name: Prepare artifact
+        run: |
+          DEST="$GITHUB_WORKSPACE/artifact_staging"
+          mkdir -p "$DEST"
+
+          cp -rp . "$DEST/"
+          
+          cd "$DEST"
+          rm -rf .git .github node_modules .cache .npm .eslintcache .prettiercache coverage logs *.log
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.workflow }} 
+          path: artifact_staging/
+          retention-days: 7

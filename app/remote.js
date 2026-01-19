@@ -1,0 +1,218 @@
+const fs = require('fs');
+const path = require('path');
+
+
+// Récupère les fichiers du repos en ignorant les fichier du script
+async function getRepoFiles(owner, repo, token) {
+    const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`;
+
+    const response = await fetch(url, {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json'
+        }
+    })
+    const data = await response.json();
+
+    return data.tree.map(item => item.path);
+}
+
+// Analyse local
+function analyseRemote(rootDir) {
+    const allFiles = getRepoFiles(rootDir);
+    const components = new Map();
+
+     // Détection python
+    const pythonFiles = allFiles.filter(f => f.endsWith('.py'));
+    if (pythonFiles.length > 0) {
+        let testCommand = "";
+        
+        // 1. Détecte le dossier de travail
+        const pyDir = path.dirname(allFiles.find(f => 
+        f.endsWith('requirements.txt') || f.endsWith('pyproject.toml')    
+        ))
+        let relativeDir = path.relative(rootDir, pyDir).replace(/\\/g, '/') || ".";
+
+
+        // 2. Détection de flake8
+        const hasConfigFile = allFiles.some(f => path.basename(f) === '.flake8');
+        
+        const hasSharedConfig = allFiles.some(f => {
+            const name = path.basename(f);
+            if (name === 'setup.cfg' || name === 'tox.ini'){
+                const content = fs.readFileSync(f, 'utf8');
+                return content.includes('[flake8]');
+            }
+            return false;
+        })
+
+        const hasFlake8InDeps = allFiles.some(f => {
+            const name = path.basename(f);
+            if (['requirements.txt', 'dev-requirements.txt', 'requirements-dev.txt', 'pyproject.toml'].includes(name)){
+                const content = fs.readFileSync(f, 'utf8')
+                return /\bflake8\b/.test(content);
+            }
+            return false;
+        })
+        
+        let lintSteps = []
+        if (hasConfigFile || hasSharedConfig || hasFlake8InDeps) {
+        lintSteps = [{name: 'Linting du code avec flake8', run: 'flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics'}];
+        }
+        // 3. Cherche si des tests python existe
+        const hasPytestConfig = allFiles.some(f => 
+            f.endsWith('pytest.ini') || f.endsWith('conftest.py') || f.endsWith('tox.ini')
+        );
+
+        const usesPytestInDeps = allFiles.some(f => {
+            if (f.endsWith('requirements.txt') || f.endsWith('pyproject.toml') || f.endsWith('dev-requirements.txt') || f.endsWith('requirements-dev.txt')) {
+                const content = fs.readFileSync(f, 'utf8');
+                return content.includes('pytest');
+            }
+            return false;
+        });
+
+        // 4. Cherche la présence de fichiers de tests
+        const hasTestFiles = allFiles.some(f => {
+            const name = path.basename(f).toLowerCase();
+            return name.includes('test') && name.endsWith('.py');
+        });
+
+        if (hasTestFiles) {
+            if (hasPytestConfig || usesPytestInDeps) {
+                // On sait que c'est Pytest
+                testCommand = "pytest";
+            } else {
+                // Par défaut on utilise Unittest
+                testCommand = "python -m unittest discover -p '*test*.py'";
+            }
+        }
+
+        const testSteps = testCommand ? [{ name: `Run ${testCommand.split(' ')[0]}`, run: testCommand }] : [];
+
+        components.set('python', {
+            template: 'python.yml',
+            output: 'python-ci.yml',
+            workingDir: relativeDir,
+            testSteps: testSteps,
+            lintSteps: lintSteps
+        });
+    }
+
+    // Détection Node.js
+    const packageFiles = allFiles.filter(f => f.endsWith('package.json'));
+
+    packageFiles.forEach(pkgPath => {
+
+        if (pkgPath.includes('node_modules')) return;
+
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            const pkgDir = path.dirname(pkgPath);
+            const relativeDir = path.relative(rootDir, pkgDir).replace(/\\/g, '/') || "."; 
+
+            let testSteps = [];
+            let lintSteps = [];
+
+            if (pkg.scripts) {
+                // détection des tests
+                const forbiddenWords = ['build', 'watch', 'debug', 'pre', 'post', 'setup', 'prepare'];
+
+                if (pkg.scripts.test) {
+                    testSteps.push({ name: 'Node npm test', run: 'npm run test'});
+                }
+                else {
+                    // si il n'y a pas de commande 'test' on recherche les commandes contenant 'test', qui ne contiennent pas les mots interdits
+                    Object.keys(pkg.scripts).forEach(scriptName => {
+                    const hasForbiddenWords = forbiddenWords.some(word => scriptName.includes(word))
+                    if (scriptName.toLowerCase().includes('test') && !hasForbiddenWords) {
+                        testSteps.push({
+                            name: `Node test (${scriptName})`,
+                            run: `npm run ${scriptName}`
+                        });
+                    }
+                });
+              }
+            }
+
+            // détection du linting 
+            if (pkg.scripts.lint || (pkg.devDependencies && pkg.devDependencies.eslint)) {
+                lintSteps.push({
+                    name: 'Linting du code avec esLint',
+                    run: pkg.scripts.lint ? 'npm run lint' : 'npx eslint .'
+                })
+            }
+            if (testSteps.length > 0 || pkg.dependencies || pkg.devDependencies) {
+                
+                // nom de fichier de sortie unique si plusieurs package.json
+                const suffix = relativeDir === "." ? "root" : relativeDir.replace(/\//g, '-');
+
+                components.set(`node-${pkgPath}`, {
+                    template: 'node.yml',
+                    output: `node-ci-${suffix}.yml`,
+                    workingDir : relativeDir,
+                    testSteps: testSteps,
+                    lintSteps: lintSteps
+                });
+            }
+        } catch (e) {
+            console.error(`Erreur lecture ${pkgPath}:`, e.message);
+        }
+    });
+
+    return Array.from(components.values());
+}
+
+// Génére le worlflow
+function generateWorkflows(components, rootDir) {
+    const workflowDir = path.join(rootDir, '.github', 'workflows');
+    if (!fs.existsSync(workflowDir)) fs.mkdirSync(workflowDir, { recursive: true });
+
+    components.forEach(comp => {
+        const templatePath = path.join(__dirname, 'templates', comp.template);
+        if (!fs.existsSync(templatePath)) return;
+
+        let content = fs.readFileSync(templatePath, 'utf8');
+        
+        // Ajout du dossier de travaille
+        content = content.replace(/{{WORKING_DIRECTORY}}/g, comp.workingDir);
+
+        // Ajout des étapes de linting du code
+        let lintYaml = "";
+        if (comp.lintSteps && comp.lintSteps.length > 0) {
+            lintYaml = comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n');
+        } else if (comp.template === 'python.yml') {
+            // Uniquement pour python si aucun linter trouvé
+            lintYaml = `      - name: Linting basique\n        run: python -m compileall .`;
+        } else {
+            lintYaml = `      # Aucun linter détecté`;
+        }
+
+        content = content.replace(/{{LINT_STEPS}}/g, lintYaml);
+
+        // Ajout des étapes d'éxecution des tests
+        let testYaml = comp.testSteps.length > 0 
+            ? comp.testSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
+            : "      # Aucun test détecté";
+
+        content = content.replace(/{{TEST_STEPS}}/g, testYaml);
+
+        fs.writeFileSync(path.join(workflowDir, comp.output), content);
+        console.log(`Workflow généré : ${comp.output}`);
+    });
+}
+
+async function Start() {
+    // const target = process.argv[2] || 'local'; Pour le mode api
+    try {
+            const rootDir = path.join(__dirname, '..'); // Remonte d'un cran
+            console.log(`Analyse du dossier : ${path.resolve(rootDir)}`);
+            const components = analyseRemote(rootDir);
+            generateWorkflows(components, rootDir);
+        
+    } catch (err) {
+        console.error("Erreur système :", err.message);
+    }
+}
+
+Start();
