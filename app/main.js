@@ -120,14 +120,23 @@ function analyseLocal(rootDir) {
 
             if (pkg.scripts) {
                 // détection des tests
-                Object.keys(pkg.scripts).forEach(scriptName => {
-                    if (scriptName.toLowerCase().includes('test')) {
+                const forbiddenWords = ['build', 'watch', 'debug', 'pre', 'post', 'setup', 'prepare'];
+
+                if (pkg.scripts.test) {
+                    testSteps.push({ name: 'Node npm test', run: 'npm run test'});
+                }
+                else {
+                    // si il n'y a pas de commande 'test' on recherche les commandes contenant 'test', qui ne contiennent pas les mots interdits
+                    Object.keys(pkg.scripts).forEach(scriptName => {
+                    const hasForbiddenWords = forbiddenWords.some(word => scriptName.includes(word))
+                    if (scriptName.toLowerCase().includes('test') && !hasForbiddenWords) {
                         testSteps.push({
                             name: `Node test (${scriptName})`,
                             run: `npm run ${scriptName}`
                         });
                     }
                 });
+              }
             }
 
             // détection du linting 
