@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+const question = (query) => new Promise((resolve) => rl.question(query, resolve));
 
 // Récupère les fichiers du repos en ignorant les fichier du script
 async function getRepoFiles(owner, repo, token) {
@@ -17,201 +24,200 @@ async function getRepoFiles(owner, repo, token) {
     return data.tree.map(item => item.path);
 }
 
-// Analyse local
-function analyseRemote(rootDir) {
-    const allFiles = getRepoFiles(rootDir);
+// Récupère le contenu des fichiers 
+async function getRawFileContent(owner, repo, filePath, token) {
+    const url = `https://raw.githubusercontent.com/${owner}/${repo}/main/${filePath}`;
+    const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) return null;
+    return await response.text();
+}
+
+// Push les fichiers sur github
+async function pushFileToGitHub(owner, repo, filePath, content, token) {
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
+    
+    // Récupérer le SHA du fichier s'il existe déjà
+    let currentSha = null;
+    try {
+        const getRes = await fetch(url, {
+            headers: { 
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/vnd.github+json'
+            }
+        });
+        
+        if (getRes.ok) {
+            const fileData = await getRes.json();
+            currentSha = fileData.sha; // C'est la clé pour la mise à jour
+        }
+    } catch (e) {
+        // Si erreur ou 404, on considère que le fichier est nouveau (currentSha reste null)
+    }
+
+    // Encoder le contenu en Base64
+    const base64Content = Buffer.from(content).toString('base64');
+
+    const body = {
+        message: `ci: generate workflow ${path.basename(filePath)}`,
+        content: base64Content
+    };
+
+    // Si on a un SHA, on l'ajoute pour dire à GitHub qu'on met à jour
+    if (currentSha) {
+        body.sha = currentSha;
+    }
+
+    const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json',
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+
+    if (response.ok) {
+        console.log(`${currentSha ? 'Mis à jour' : 'Créé'} : ${filePath}`);
+    } else {
+        const error = await response.json();
+        console.error(`Erreur lors de l'envoi de ${filePath} :`, error.message);
+    }
+}
+
+// Récupère les languages utilisés dans le repo
+async function getRepoLanguages(owner, repo, token) {
+    const url = `https://api.github.com/repos/${owner}/${repo}/languages`;
+    const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    return await response.json();
+}
+
+// Analyse remote
+async function analyseRemote(owner, repo, token) {
+    const languages = await getRepoLanguages(owner, repo, token)
+    const allFiles = await getRepoFiles(owner, repo, token);
     const components = new Map();
 
      // Détection python
-    const pythonFiles = allFiles.filter(f => f.endsWith('.py'));
-    if (pythonFiles.length > 0) {
-        let testCommand = "";
-        
+    if (languages.Python) {
         // 1. Détecte le dossier de travail
-        const pyDir = path.dirname(allFiles.find(f => 
-        f.endsWith('requirements.txt') || f.endsWith('pyproject.toml')    
-        ))
-        let relativeDir = path.relative(rootDir, pyDir).replace(/\\/g, '/') || ".";
+        const configFile = allFiles.find(f => f.endsWith('requirements.txt') || f.endsWith('pyproject.toml'));
+        const pyDir = configFile ? path.dirname(configFile) : ".";
 
+        // On récupère le contenu du fichier de config à distance pour chercher flake8/pytest
+        const configContent = configFile ? await getRawFileContent(owner, repo, configFile, token) : "";
 
         // 2. Détection de flake8
-        const hasConfigFile = allFiles.some(f => path.basename(f) === '.flake8');
-        
-        const hasSharedConfig = allFiles.some(f => {
-            const name = path.basename(f);
-            if (name === 'setup.cfg' || name === 'tox.ini'){
-                const content = fs.readFileSync(f, 'utf8');
-                return content.includes('[flake8]');
-            }
-            return false;
-        })
-
-        const hasFlake8InDeps = allFiles.some(f => {
-            const name = path.basename(f);
-            if (['requirements.txt', 'dev-requirements.txt', 'requirements-dev.txt', 'pyproject.toml'].includes(name)){
-                const content = fs.readFileSync(f, 'utf8')
-                return /\bflake8\b/.test(content);
-            }
-            return false;
-        })
-        
-        let lintSteps = []
-        if (hasConfigFile || hasSharedConfig || hasFlake8InDeps) {
-        lintSteps = [{name: 'Linting du code avec flake8', run: 'flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics'}];
-        }
-        // 3. Cherche si des tests python existe
-        const hasPytestConfig = allFiles.some(f => 
-            f.endsWith('pytest.ini') || f.endsWith('conftest.py') || f.endsWith('tox.ini')
-        );
-
-        const usesPytestInDeps = allFiles.some(f => {
-            if (f.endsWith('requirements.txt') || f.endsWith('pyproject.toml') || f.endsWith('dev-requirements.txt') || f.endsWith('requirements-dev.txt')) {
-                const content = fs.readFileSync(f, 'utf8');
-                return content.includes('pytest');
-            }
-            return false;
-        });
-
-        // 4. Cherche la présence de fichiers de tests
-        const hasTestFiles = allFiles.some(f => {
-            const name = path.basename(f).toLowerCase();
-            return name.includes('test') && name.endsWith('.py');
-        });
-
-        if (hasTestFiles) {
-            if (hasPytestConfig || usesPytestInDeps) {
-                // On sait que c'est Pytest
-                testCommand = "pytest";
-            } else {
-                // Par défaut on utilise Unittest
-                testCommand = "python -m unittest discover -p '*test*.py'";
-            }
+        let lintSteps = [];
+        if (configContent?.includes('flake8') || allFiles.some(f => f.includes('.flake8'))) {
+            lintSteps.push({name: 'Linting flake8', run: 'flake8 . --count --statistics'});
         }
 
-        const testSteps = testCommand ? [{ name: `Run ${testCommand.split(' ')[0]}`, run: testCommand }] : [];
+        let testCommand = allFiles.some(f => f.toLowerCase().includes('test') && f.endsWith('.py'))
+            ? (configContent?.includes('pytest') ? "pytest" : "python -m unittest discover")
+            : "";
 
         components.set('python', {
             template: 'python.yml',
             output: 'python-ci.yml',
-            workingDir: relativeDir,
-            testSteps: testSteps,
+            workingDir: pyDir === "." ? "." : pyDir,
+            testSteps: testCommand ? [{ name: `Run ${testCommand}`, run: testCommand }] : [],
             lintSteps: lintSteps
         });
     }
 
     // Détection Node.js
-    const packageFiles = allFiles.filter(f => f.endsWith('package.json'));
+    if (languages.TypeScript || languages.JavaScript) {
+    const packageFiles = allFiles.filter(f => f.endsWith('package.json') && !f.includes('node_modules'));
+    for (const pkgPath of packageFiles) {
+            const content = await getRawFileContent(owner, repo, pkgPath, token);
+            if (!content) continue;
 
-    packageFiles.forEach(pkgPath => {
+            try {
+                const pkg = JSON.parse(content);
+                const pkgDir = path.dirname(pkgPath);
+                let testSteps = [];
+                let lintSteps = [];
 
-        if (pkgPath.includes('node_modules')) return;
-
-        try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-            const pkgDir = path.dirname(pkgPath);
-            const relativeDir = path.relative(rootDir, pkgDir).replace(/\\/g, '/') || "."; 
-
-            let testSteps = [];
-            let lintSteps = [];
-
-            if (pkg.scripts) {
-                // détection des tests
-                const forbiddenWords = ['build', 'watch', 'debug', 'pre', 'post', 'setup', 'prepare'];
-
-                if (pkg.scripts.test) {
-                    testSteps.push({ name: 'Node npm test', run: 'npm run test'});
-                }
-                else {
-                    // si il n'y a pas de commande 'test' on recherche les commandes contenant 'test', qui ne contiennent pas les mots interdits
-                    Object.keys(pkg.scripts).forEach(scriptName => {
-                    const hasForbiddenWords = forbiddenWords.some(word => scriptName.includes(word))
-                    if (scriptName.toLowerCase().includes('test') && !hasForbiddenWords) {
-                        testSteps.push({
-                            name: `Node test (${scriptName})`,
-                            run: `npm run ${scriptName}`
-                        });
+                if (pkg.scripts) {
+                    if (pkg.scripts.test) {
+                        testSteps.push({ name: 'NPM test', run: 'npm test' });
                     }
-                });
-              }
-            }
+                    if (pkg.scripts.lint) {
+                        lintSteps.push({ name: 'NPM lint', run: 'npm run lint' });
+                    }
+                }
 
-            // détection du linting 
-            if (pkg.scripts.lint || (pkg.devDependencies && pkg.devDependencies.eslint)) {
-                lintSteps.push({
-                    name: 'Linting du code avec esLint',
-                    run: pkg.scripts.lint ? 'npm run lint' : 'npx eslint .'
-                })
-            }
-            if (testSteps.length > 0 || pkg.dependencies || pkg.devDependencies) {
-                
-                // nom de fichier de sortie unique si plusieurs package.json
-                const suffix = relativeDir === "." ? "root" : relativeDir.replace(/\//g, '-');
-
+                const suffix = pkgDir === "." ? "root" : pkgDir.replace(/\//g, '-');
                 components.set(`node-${pkgPath}`, {
                     template: 'node.yml',
                     output: `node-ci-${suffix}.yml`,
-                    workingDir : relativeDir,
+                    workingDir: pkgDir === "." ? "." : pkgDir,
                     testSteps: testSteps,
                     lintSteps: lintSteps
                 });
-            }
-        } catch (e) {
-            console.error(`Erreur lecture ${pkgPath}:`, e.message);
+            } catch (e) { console.error("Erreur JSON", pkgPath); }
         }
-    });
-
+    }
     return Array.from(components.values());
 }
 
 // Génére le worlflow
-function generateWorkflows(components, rootDir) {
-    const workflowDir = path.join(rootDir, '.github', 'workflows');
-    if (!fs.existsSync(workflowDir)) fs.mkdirSync(workflowDir, { recursive: true });
-
-    components.forEach(comp => {
+async function generateAndPushWorkflows(components, owner, repo, token) {
+   for (const comp of components) {
         const templatePath = path.join(__dirname, 'templates', comp.template);
-        if (!fs.existsSync(templatePath)) return;
+        if (!fs.existsSync(templatePath)) continue;
 
         let content = fs.readFileSync(templatePath, 'utf8');
+        content = content.replaceAll('{{WORKING_DIRECTORY}}', comp.workingDir);
+
+        // Génération du YAML pour les tests/lint (logique simplifiée pour l'exemple)
+        const lintYaml = comp.lintSteps.length > 0 
+            ? comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
+            : "      # No lint detected";
         
-        // Ajout du dossier de travaille
-        content = content.replace(/{{WORKING_DIRECTORY}}/g, comp.workingDir);
-
-        // Ajout des étapes de linting du code
-        let lintYaml = "";
-        if (comp.lintSteps && comp.lintSteps.length > 0) {
-            lintYaml = comp.lintSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n');
-        } else if (comp.template === 'python.yml') {
-            // Uniquement pour python si aucun linter trouvé
-            lintYaml = `      - name: Linting basique\n        run: python -m compileall .`;
-        } else {
-            lintYaml = `      # Aucun linter détecté`;
-        }
-
-        content = content.replace(/{{LINT_STEPS}}/g, lintYaml);
-
-        // Ajout des étapes d'éxecution des tests
-        let testYaml = comp.testSteps.length > 0 
+        const testYaml = comp.testSteps.length > 0 
             ? comp.testSteps.map(s => `      - name: ${s.name}\n        run: ${s.run}`).join('\n')
-            : "      # Aucun test détecté";
+            : "      # No tests detected";
 
-        content = content.replace(/{{TEST_STEPS}}/g, testYaml);
+        content = content.replace('{{LINT_STEPS}}', lintYaml).replace('{{TEST_STEPS}}', testYaml);
 
-        fs.writeFileSync(path.join(workflowDir, comp.output), content);
-        console.log(`Workflow généré : ${comp.output}`);
-    });
+        // Envoi direct à GitHub
+        const remotePath = `.github/workflows/${comp.output}`;
+        await pushFileToGitHub(owner, repo, remotePath, content, token);
+    }
 }
 
 async function Start() {
-    // const target = process.argv[2] || 'local'; Pour le mode api
     try {
-            const rootDir = path.join(__dirname, '..'); // Remonte d'un cran
-            console.log(`Analyse du dossier : ${path.resolve(rootDir)}`);
-            const components = analyseRemote(rootDir);
-            generateWorkflows(components, rootDir);
+            
+            console.log("--- Configuration de l'analyse github ---");
+            const owner = await question("Propriétaire du dépôt : ");
+            const repo = await question("Nom du repo : ");
+            const token = await question("Token github : ");
+
+            console.log(`\n Lancement de l'analyse pour ${owner}/${repo}...\n`);
+
+            const components = await analyseRemote(owner, repo, token);
+
+            if (components.length === 0) {
+            console.log("❌ Aucune technologie compatible détectée.");
+            return;
+        }
+
+            await generateAndPushWorkflows(components, owner, repo, token);
+
+            console.log("\n✅ Tous les workflows ont été envoyés sur GitHub !");
         
     } catch (err) {
         console.error("Erreur système :", err.message);
+    }
+     finally {
+        rl.close();
     }
 }
 
