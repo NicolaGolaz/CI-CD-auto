@@ -105,27 +105,51 @@ async function analyseRemote(owner, repo, token) {
      // Détection python
     if (languages.Python) {
         // 1. Détecte le dossier de travail
-        const configFile = allFiles.find(f => f.endsWith('requirements.txt') || f.endsWith('pyproject.toml'));
-        const pyDir = configFile ? path.dirname(configFile) : ".";
+        const depFile = allFiles.find(f => f.endsWith('requirements.txt') || f.endsWith('pyproject.toml'));
+        const pyDir = depFile ? path.dirname(depFile) : ".";
 
         // On récupère le contenu du fichier de config à distance pour chercher flake8/pytest
-        const configContent = configFile ? await getRawFileContent(owner, repo, configFile, token) : "";
+        const depContent = depFile ? await getRawFileContent(owner, repo, depFile, token) : "";
+
+        const pyConfigFile = allFiles.find(f => path.basename(f) === 'config.py');
+        const configDir = pyConfigFile ? path.dirname(pyConfigFile) : null;
 
         // 2. Détection de flake8
         let lintSteps = [];
-        if (configContent?.includes('flake8') || allFiles.some(f => f.includes('.flake8'))) {
+        if (depContent?.includes('flake8') || allFiles.some(f => f.includes('.flake8'))) {
             lintSteps.push({name: 'Linting flake8', run: 'flake8 . --count --statistics'});
         }
 
-        let testCommand = allFiles.some(f => f.toLowerCase().includes('test') && f.endsWith('.py'))
-            ? (configContent?.includes('pytest') ? "pytest" : "python -m unittest discover")
-            : "";
+        let testSteps = [];
+        const hasRootTestFile = allFiles.includes('tests.py'); // Ton cas spécifique
+        const hasAnyTests = allFiles.some(f => f.toLowerCase().includes('test') && f.endsWith('.py'));
+
+        if (hasAnyTests) {
+            // On prépare le préfixe PYTHONPATH seulement si un config.py est trouvé hors de la racine
+            const pythonPathPrefix = (configDir && configDir !== ".") ? `export PYTHONPATH=$PYTHONPATH:./${configDir} && ` : "";
+            
+            let runCmd = "";
+            if (hasRootTestFile) {
+                // Priorité au script de test à la racine (très courant dans les petits projets Flask)
+                runCmd = `${pythonPathPrefix}python tests.py`;
+            } else if (depContent?.includes('pytest')) {
+                runCmd = "pytest";
+            } else {
+                // Découverte automatique par défaut
+                runCmd = `${pythonPathPrefix}python -m unittest discover -v`;
+            }
+
+            testSteps.push({
+                name: 'Run Python Tests',
+                run: runCmd
+            });
+        }
 
         components.set('python', {
             template: 'python.yml',
             output: 'python-ci.yml',
             workingDir: pyDir === "." ? "." : pyDir,
-            testSteps: testCommand ? [{ name: `Run ${testCommand}`, run: testCommand }] : [],
+            testSteps: testSteps,
             lintSteps: lintSteps
         });
     }
@@ -148,7 +172,7 @@ async function analyseRemote(owner, repo, token) {
                         testSteps.push({ name: 'NPM test', run: 'npm test' });
                     }
                     if (pkg.scripts.lint) {
-                        lintSteps.push({ name: 'NPM lint', run: 'npm run lint' });
+                        lintSteps.push({ name: 'NPM lint', run: 'npm run lint -- --fix' });
                     }
                 }
 
