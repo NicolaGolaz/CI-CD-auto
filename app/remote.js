@@ -9,6 +9,17 @@ const rl = readline.createInterface({
 
 const question = (query) => new Promise((resolve) => rl.question(query, resolve));
 
+// Récupère la branche par défaut du repo
+async function getDefaultBranch(owner, repo, token) {
+    const url = `https://api.github.com/repos/${owner}/${repo}`;
+    const response = await fetch(url, { 
+        headers: { 
+            'Authorization': `Bearer ${token}`
+        }});
+    const data = await response.json();
+    return data.default_branch;
+}
+
 // Récupère les fichiers du repos en ignorant les fichier du script
 async function getRepoFiles(owner, repo, token) {
     const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`;
@@ -209,6 +220,10 @@ async function generateAndPushWorkflows(components, owner, repo, token) {
             : "      # No tests detected";
 
         content = content.replace('{{LINT_STEPS}}', lintYaml).replace('{{TEST_STEPS}}', testYaml);
+
+        const defaultBranch = await getDefaultBranch();
+        console.log('default branch : ',defaultBranch)
+        content = content.replace('{{DEFAULT_BRANCH}}', defaultBranch);
 
         // Envoi direct à GitHub
         const remotePath = `.github/workflows/${comp.output}`;
