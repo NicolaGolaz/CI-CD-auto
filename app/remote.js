@@ -17,12 +17,13 @@ async function getDefaultBranch(owner, repo, token) {
             'Authorization': `Bearer ${token}`
         }});
     const data = await response.json();
+    console.log(data)
     return data.default_branch;
 }
 
 // Récupère les fichiers du repos en ignorant les fichier du script
-async function getRepoFiles(owner, repo, token) {
-    const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`;
+async function getRepoFiles(owner, repo, token, branch) {
+    const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
 
     const response = await fetch(url, {
         headers: {
@@ -36,8 +37,8 @@ async function getRepoFiles(owner, repo, token) {
 }
 
 // Récupère le contenu des fichiers 
-async function getRawFileContent(owner, repo, filePath, token) {
-    const url = `https://raw.githubusercontent.com/${owner}/${repo}/main/${filePath}`;
+async function getRawFileContent(owner, repo, filePath, token, branch) {
+    const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
     const response = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -108,9 +109,9 @@ async function getRepoLanguages(owner, repo, token) {
 }
 
 // Analyse remote
-async function analyseRemote(owner, repo, token) {
+async function analyseRemote(owner, repo, token, branch) {
     const languages = await getRepoLanguages(owner, repo, token)
-    const allFiles = await getRepoFiles(owner, repo, token);
+    const allFiles = await getRepoFiles(owner, repo, token, branch);
     const components = new Map();
 
      // Détection python
@@ -120,7 +121,7 @@ async function analyseRemote(owner, repo, token) {
         const pyDir = depFile ? path.dirname(depFile) : ".";
 
         // On récupère le contenu du fichier de config à distance pour chercher flake8/pytest
-        const depContent = depFile ? await getRawFileContent(owner, repo, depFile, token) : "";
+        const depContent = depFile ? await getRawFileContent(owner, repo, depFile, token, branch) : "";
 
         const pyConfigFile = allFiles.find(f => path.basename(f) === 'config.py');
         const configDir = pyConfigFile ? path.dirname(pyConfigFile) : null;
@@ -169,7 +170,7 @@ async function analyseRemote(owner, repo, token) {
     if (languages.TypeScript || languages.JavaScript) {
     const packageFiles = allFiles.filter(f => f.endsWith('package.json') && !f.includes('node_modules'));
     for (const pkgPath of packageFiles) {
-            const content = await getRawFileContent(owner, repo, pkgPath, token);
+            const content = await getRawFileContent(owner, repo, pkgPath, token, branch);
             if (!content) continue;
 
             try {
@@ -202,7 +203,7 @@ async function analyseRemote(owner, repo, token) {
 }
 
 // Génére le worlflow
-async function generateAndPushWorkflows(components, owner, repo, token) {
+async function generateAndPushWorkflows(components, owner, repo, token, branch) {
    for (const comp of components) {
         const templatePath = path.join(__dirname, 'templates', comp.template);
         if (!fs.existsSync(templatePath)) continue;
@@ -221,9 +222,7 @@ async function generateAndPushWorkflows(components, owner, repo, token) {
 
         content = content.replace('{{LINT_STEPS}}', lintYaml).replace('{{TEST_STEPS}}', testYaml);
 
-        const defaultBranch = await getDefaultBranch();
-        console.log('default branch : ',defaultBranch)
-        content = content.replace('{{DEFAULT_BRANCH}}', defaultBranch);
+        content = content.replace('{{DEFAULT_BRANCH}}', branch);
 
         // Envoi direct à GitHub
         const remotePath = `.github/workflows/${comp.output}`;
@@ -241,14 +240,17 @@ async function Start() {
 
             console.log(`\n Lancement de l'analyse pour ${owner}/${repo}...\n`);
 
-            const components = await analyseRemote(owner, repo, token);
+            const branch = await getDefaultBranch(owner, repo, token);
+            console.log('default branch : ',branch)
+
+            const components = await analyseRemote(owner, repo, token, branch);
 
             if (components.length === 0) {
             console.log("❌ Aucune technologie compatible détectée.");
             return;
         }
 
-            await generateAndPushWorkflows(components, owner, repo, token);
+            await generateAndPushWorkflows(components, owner, repo, token, branch);
 
             console.log("\n✅ Tous les workflows ont été envoyés sur GitHub !");
         
