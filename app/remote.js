@@ -117,6 +117,7 @@ async function analyseRemote(owner, repo, token, branch) {
      // Détection python
     if (languages.Python) {
         // 1. Détecte le dossier de travail
+        console.log("- Projet python détecté\n")
         const depFile = allFiles.find(f => f.endsWith('requirements.txt') || f.endsWith('pyproject.toml'));
         const pyDir = depFile ? path.dirname(depFile) : ".";
 
@@ -168,6 +169,7 @@ async function analyseRemote(owner, repo, token, branch) {
 
     // Détection Node.js
     if (languages.TypeScript || languages.JavaScript) {
+        console.log("- Projet Nodejs détecté\n")
     const packageFiles = allFiles.filter(f => f.endsWith('package.json') && !f.includes('node_modules'));
     for (const pkgPath of packageFiles) {
             const content = await getRawFileContent(owner, repo, pkgPath, token, branch);
