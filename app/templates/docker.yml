@@ -1,0 +1,15 @@
+name: Docker CI
+
+on:
+  push:
+    branches:
+      - {{DEFAULT_BRANCH}} 
+
+jobs:
+  docker-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+{{TEST_STEPS}}

@@ -201,6 +201,48 @@ async function analyseRemote(owner, repo, token, branch) {
             } catch (e) { console.error("Erreur JSON", pkgPath); }
         }
     }
+
+    // DETECTION DOCKER
+    const  dockerFiles = allFiles.filter( f => 
+        path.basename(f).toLowerCase().includes('dockerfile') ||
+        path.basename(f).toLowerCase().includes('docker-compose')
+    )
+    if (dockerFiles.length > 0) {
+    let dockerSteps = [];
+
+    const dockerfileRef = allFiles.find(f => path.basename(f).toLowerCase() === 'dockerfile');
+
+    if (dockerfileRef) {
+    const dockerfileDir = path.dirname(dockerfileRef);
+    
+    dockerSteps.push({
+        name: `Docker Build (${dockerfileDir})`,
+        run: `docker build -t ci-test-image ${dockerfileDir}`
+    });
+    }
+
+    const composeFile = allFiles.find(f => 
+    path.basename(f) === 'docker-compose.yml' || 
+    path.basename(f) === 'docker-compose.yaml'
+    );
+    if (composeFile) {
+        dockerSteps.push({
+        name: 'Docker Compose Config Check',
+        run: `docker compose -f ${composeFile} config`
+    });
+    }
+
+    if (dockerSteps.length > 0) {
+        components.set('docker', {
+            template: 'docker.yml',
+            output: 'docker-check.yml',
+            workingDir: '.',
+            testSteps: dockerSteps,
+            lintSteps: []
+        });
+    }
+}
+
     return Array.from(components.values());
 }
 
